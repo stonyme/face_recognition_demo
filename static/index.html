@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>人脸识别系统</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            padding: 20px;
+        }
+
+        .tabs {
+            display: flex;
+            width: 100%;
+            max-width: 640px;
+            justify-content: space-around;
+            margin-bottom: 20px;
+        }
+
+        .tab {
+            flex: 1;
+            text-align: center;
+            padding: 10px;
+            cursor: pointer;
+            background-color: #f1f1f1;
+            border: 1px solid #ddd;
+        }
+
+        .tab.active {
+            background-color: #ddd;
+            font-weight: bold;
+        }
+
+        .tab-content {
+            display: none;
+            width: 100%;
+            max-width: 640px;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        video {
+            width: 100%;
+            border: 1px solid #ccc;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        #controls {
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        table,
+        th,
+        td {
+            border: 1px solid #ddd;
+        }
+
+        th,
+        td {
+            text-align: center;
+            padding: 10px;
+        }
+
+        input[type="text"],
+        input[type="file"] {
+            margin-bottom: 10px;
+        }
+
+        button {
+            margin: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>人脸识别系统</h1>
+    <div class="tabs">
+        <div class="tab active" data-tab="recognition">视频识别</div>
+        <div class="tab" data-tab="user-management">用户管理</div>
+    </div>
+
+    <!-- 视频识别模块 -->
+    <div class="tab-content active" id="recognition">
+        <div style="position: relative;" id="video-container">
+            <video id="video" autoplay muted playsinline></video>
+            <canvas id="overlay"></canvas>
+        </div>
+        <div id="controls">
+            <button id="start-button">开始识别</button>
+            <button id="stop-button" disabled>停止识别</button>
+            <!-- <label>
+                <input type="checkbox" id="liveness-toggle"> 开启活体检测
+            </label> -->
+        </div>
+        <div id="results" style="text-align: center; margin-top: 10px;"></div>
+    </div>
+
+    <!-- 用户管理模块 -->
+    <div class="tab-content" id="user-management">
+        <form id="upload-form">
+            <input type="text" id="user-name" placeholder="请输入用户名" required>
+            <input type="file" id="user-image" accept="image/*" required>
+            <button type="submit">上传用户</button>
+        </form>
+        <table>
+            <thead>
+                <tr>
+                    <th>头像</th>
+                    <th>名称</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody id="user-list">
+                <!-- 用户列表内容动态填充 -->
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        const tabs = document.querySelectorAll('.tab');
+        const tabContents = document.querySelectorAll('.tab-content');
+        const video = document.getElementById('video');
+        const overlay = document.getElementById('overlay');
+        const startButton = document.getElementById('start-button');
+        const stopButton = document.getElementById('stop-button');
+        const results = document.getElementById('results');
+        const uploadForm = document.getElementById('upload-form');
+        const userList = document.getElementById('user-list');
+        const captureButton = document.querySelector("#capture");
+        const livenessToggle = document.getElementById('liveness-toggle');
+        const videoContainer = document.getElementById('video-container');
+
+        let recognitionInterval;
+        let stream;
+
+        // 切换标签页
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                tabs.forEach(t => t.classList.remove('active'));
+                tabContents.forEach(content => content.classList.remove('active'));
+
+                tab.classList.add('active');
+                document.getElementById(tab.dataset.tab).classList.add('active');
+            });
+        });
+
+        // 启动摄像头
+        async function startCamera() {
+            stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                overlay.width = video.videoWidth;
+                overlay.height = video.videoHeight;
+            };
+        }
+
+        // 停止摄像头
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+            videoContainer.classList.add('hidden');
+        }
+        // 开启活体检测
+        let blinkFrames = 0; // 眨眼帧数统计
+        async function checkLivenessWithBlink(imageData) {
+            const response = await fetch('/liveness', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: imageData })
+            });
+            if (response.ok) {
+                const data = await response.json();
+                if (data.liveness) {
+                    blinkFrames++; // 活体检测通过，累积眨眼帧数
+                } else {
+                    blinkFrames = 0; // 未通过，重置眨眼帧数
+                }
+
+                if (blinkFrames >= 3) { // 眨眼超过3帧，判定为活体
+                    results.textContent = "检测到活体";
+                } else {
+                    results.textContent = "请眨眼...";
+                }
+            } else {
+                console.error("活体检测失败");
+            }
+        }
+        // 开启活体检测
+        async function checkLiveness(imageData) {
+            // setInterval(checkLivenessWithBlink, 200);
+
+            // const response = await fetch('/liveness', {
+            //     method: 'POST',
+            //     headers: { 'Content-Type': 'application/json' },
+            //     body: JSON.stringify({ image: imageData })
+            // });
+            // if (response.ok) {
+            //     const data = await response.json();
+            //     return data.liveness; // 返回活体检测结果（true 或 false）
+            // } else {
+            //     console.error("活体检测失败");
+            //     return false; // 默认非活体
+            // }
+        }
+
+        // 识别人脸
+        async function recognizeFace() {
+            if (!video.videoWidth || !video.videoHeight) return;
+
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const tempContext = canvas.getContext('2d');
+            tempContext.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            const imageData = canvas.toDataURL('image/jpeg');
+
+            // 同时请求人脸识别和活体检测
+            const [recognizeResponse, liveness] = await Promise.all([
+                fetch('/recognize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: imageData })
+                }),
+                checkLiveness(imageData) // 调用活体检测函数
+            ]);
+
+            if (recognizeResponse.ok) {
+                const data = await recognizeResponse.json();
+                results.textContent = ""; // 清空识别结果显示
+
+                const context = overlay.getContext('2d');
+                context.clearRect(0, 0, overlay.width, overlay.height);
+
+                data.results.forEach(face => {
+                    const { name, distance, location } = face;
+                    let displayText = "";
+
+                    if (name !== "未知") {
+                        const similarity = (1 - distance).toFixed(2) * 100;
+                        displayText = `${name} (相似度: ${similarity}%)`;
+                        // displayText += liveness ? " [活体]" : " [非活体]";
+                    } else {
+                        displayText = "未识别出匹配的用户";
+                        // if (!liveness) {
+                        //     displayText += " [非活体]";
+                        // }
+                    }
+
+                    // 在结果区域显示人脸识别和活体检测信息
+                    results.textContent += `识别结果: ${displayText}\n`;
+
+                    // 显示人脸框
+                    context.strokeStyle = name !== "未知" ? "green" : "red";
+                    context.lineWidth = 2;
+                    context.strokeRect(
+                        location.left,
+                        location.top,
+                        location.right - location.left,
+                        location.bottom - location.top
+                    );
+
+                    // 在框上方显示名字和检测信息
+                    context.font = "14px Arial";
+                    context.fillStyle = "white";
+                    context.fillText(
+                        displayText,
+                        location.left,
+                        location.top > 10 ? location.top - 5 : 10 // 避免文字超出顶部边界
+                    );
+                });
+            } else {
+                results.textContent = '识别失败，请稍候重试...';
+            }
+        }
+
+
+        startButton.addEventListener('click', () => {
+            startButton.disabled = true;
+            stopButton.disabled = false;
+            startCamera();
+            recognitionInterval = setInterval(recognizeFace, 3000); // 每3秒识别一次
+        });
+
+        stopButton.addEventListener('click', () => {
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            clearInterval(recognitionInterval);
+            results.textContent = '';
+            stopCamera();
+        });
+
+        // 上传用户头像
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const name = document.getElementById('user-name').value;
+            const image = document.getElementById('user-image').files[0];
+
+            const formData = new FormData();
+            formData.append('name', name);
+            formData.append('image', image);
+
+            const response = await fetch('/upload', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (response.ok) {
+                alert('用户上传成功');
+                loadUserList();
+            } else {
+                alert('上传失败，请重试');
+            }
+        });
+
+        // 加载用户列表
+        async function loadUserList() {
+            const response = await fetch('/gallery');
+            if (response.ok) {
+                const data = await response.json();
+                userList.innerHTML = data.users.map(user => `
+                    <tr>
+                        <td><img src="${user.image}" alt="头像" style="width: 50px; height: 50px;"></td>
+                        <td>${user.name}</td>
+                        <td>
+                            <button onclick="deleteUser(${user.id})">删除</button>
+                            <button onclick="editUser(${user.id}, '${user.name}')">编辑</button>
+                        </td>
+                    </tr>
+                `).join('');
+            }
+        }
+        // 删除用户
+        async function deleteUser(userId) {
+            if (confirm('确认删除该用户吗？')) {
+                fetch(`/delete/${userId}`, {
+                    method: 'DELETE'
+                }).then(response => {
+                    if (response.ok) {
+                        alert('用户删除成功');
+                        loadUserList();
+                    } else {
+                        alert('删除失败，请重试');
+                    }
+                });
+            }
+        }
+
+        // 编辑用户
+        function editUser(userId, currentName) {
+            const newName = prompt('请输入新的用户名', currentName);
+            if (newName && newName !== currentName) {
+                fetch(`/edit/${userId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: newName })
+                }).then(response => {
+                    if (response.ok) {
+                        alert('用户名更新成功');
+                        loadUserList();
+                    } else {
+                        alert('更新失败，请重试');
+                    }
+                });
+            }
+        }
+
+        // 页面加载时启动摄像头并加载用户列表
+        window.onload = () => {
+            // startCamera();
+            loadUserList();
+        };
+
+
+        // Get camera stream
+        navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
+            video.srcObject = stream;
+            video.play();
+        });
+    </script>
+</body>
+
+</html>
