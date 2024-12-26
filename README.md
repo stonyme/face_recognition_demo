@@ -1,4 +1,4 @@
-# 人脸识别与活体检测系统 / Face Recognition and Liveness Detection System
+# 人脸识别系统 / Face Recognition and Liveness Detection System
 
 ## 项目描述 / Project Description
 
